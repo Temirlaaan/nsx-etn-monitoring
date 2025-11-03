@@ -35,7 +35,7 @@ class CertificateCheck(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     node_id = Column(String, ForeignKey('transport_nodes.id'), nullable=False)
-    cert_expiry_date = Column(DateTime, nullable=False)
+    cert_expiry_date = Column(DateTime, nullable=True)  # ✅ FIXED: Can be NULL if check failed
     days_remaining = Column(Integer, nullable=False)
     check_status = Column(String, nullable=False)  # success, error, timeout, ssh_failed
     error_message = Column(Text)
