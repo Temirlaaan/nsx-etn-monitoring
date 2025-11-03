@@ -290,6 +290,60 @@ async def health_check():
         "scheduler_running": scheduler_service is not None
     }
 
+@app.post("/api/trigger/cert-check")
+async def trigger_cert_check():
+    """Manually trigger certificate check."""
+    if scheduler_service:
+        logger.info("Manual certificate check triggered via API")
+        asyncio.create_task(scheduler_service.check_certificates())
+        return {
+            "status": "triggered",
+            "message": "Certificate check started in background",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    return {
+        "status": "error",
+        "message": "Scheduler not running"
+    }, 503
+
+
+@app.post("/api/trigger/nsx-sync")
+async def trigger_nsx_sync():
+    """Manually trigger NSX sync."""
+    if scheduler_service:
+        logger.info("Manual NSX sync triggered via API")
+        asyncio.create_task(scheduler_service.sync_nsx_nodes())
+        return {
+            "status": "triggered",
+            "message": "NSX sync started in background",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    return {
+        "status": "error",
+        "message": "Scheduler not running"
+    }, 503
+
+
+@app.get("/api/scheduler/status")
+async def scheduler_status():
+    """Get scheduler status and next run times."""
+    if not scheduler_service:
+        return {"status": "error", "message": "Scheduler not running"}, 503
+    
+    jobs_info = []
+    for job in scheduler_service.scheduler.get_jobs():
+        jobs_info.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
+            "trigger": str(job.trigger)
+        })
+    
+    return {
+        "status": "running",
+        "jobs": jobs_info,
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 if __name__ == "__main__":
     import uvicorn

@@ -251,3 +251,7 @@ class SchedulerService:
         """Run initial sync on startup."""
         logger.info("Running initial NSX sync on startup...")
         await self.sync_nsx_nodes()
+        
+        # ✅ ДОБАВЛЕНО: Запустить проверку сертификатов сразу после синхронизации
+        logger.info("Running initial certificate check on startup...")
+        await self.check_certificates()
