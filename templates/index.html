@@ -191,6 +191,12 @@
             background: #f9fafb;
             border-top: 1px solid #e5e7eb;
         }
+        
+        .time-detail {
+            font-size: 11px;
+            color: #9ca3af;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
@@ -236,7 +242,7 @@
                         <th>IP Адрес</th>
                         <th>Режим обслуживания</th>
                         <th>Дата истечения</th>
-                        <th>Осталось дней</th>
+                        <th>Осталось</th>
                         <th>Статус</th>
                         <th>Последняя проверка</th>
                     </tr>
@@ -257,28 +263,65 @@
                         </td>
                         <td>
                             {% if node.cert_expiry_date %}
-                                {{ node.cert_expiry_date.strftime('%Y-%m-%d %H:%M') }}
-                            {% else %}
-                                <span class="timestamp">—</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            {% if node.days_remaining is not none %}
-                                <strong>{{ node.days_remaining }}</strong>
+                                {{ node.cert_expiry_date.strftime('%Y-%m-%d %H:%M') }} UTC
                             {% else %}
                                 <span class="timestamp">—</span>
                             {% endif %}
                         </td>
                         <td>
                             {% if node.check_status == 'success' %}
-                                {% if node.days_remaining <= 0 %}
-                                    <span class="badge expired">Истёк</span>
-                                {% elif node.days_remaining <= 7 %}
-                                    <span class="badge critical">Критично</span>
-                                {% elif node.days_remaining <= 30 %}
-                                    <span class="badge warning">Предупреждение</span>
+                                {% set days = node.days_remaining %}
+                                {% set now = now %}
+                                {% if node.cert_expiry_date %}
+                                    {% set time_diff = node.cert_expiry_date - now %}
+                                    {% set total_seconds = time_diff.total_seconds() %}
+                                    
+                                    {# ✅ ИСПРАВЛЕННАЯ ЛОГИКА: Проверяем реальное время, а не только дни #}
+                                    {% if total_seconds > 0 %}
+                                        {# Сертификат еще действителен #}
+                                        {% if days > 0 %}
+                                            <strong>{{ days }} дней</strong>
+                                        {% else %}
+                                            {# Осталось меньше суток #}
+                                            {% set hours = (total_seconds // 3600)|int %}
+                                            <strong>&lt; 1 день</strong>
+                                            <div class="time-detail">({{ hours }} часов)</div>
+                                        {% endif %}
+                                    {% else %}
+                                        {# Сертификат реально истек #}
+                                        {% set days_ago = (days * -1)|int %}
+                                        {% if days_ago > 0 %}
+                                            <strong>{{ days_ago }} дней назад</strong>
+                                        {% else %}
+                                            {% set hours_ago = ((total_seconds * -1) // 3600)|int %}
+                                            <strong>{{ hours_ago }} часов назад</strong>
+                                        {% endif %}
+                                    {% endif %}
                                 {% else %}
-                                    <span class="badge ok">OK</span>
+                                    <span class="timestamp">—</span>
+                                {% endif %}
+                            {% else %}
+                                <span class="timestamp">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if node.check_status == 'success' %}
+                                {% if node.cert_expiry_date %}
+                                    {% set time_diff = node.cert_expiry_date - now %}
+                                    {% set total_seconds = time_diff.total_seconds() %}
+                                    
+                                    {# ✅ ИСПРАВЛЕННАЯ ЛОГИКА: Используем total_seconds #}
+                                    {% if total_seconds <= 0 %}
+                                        <span class="badge expired">Истёк</span>
+                                    {% elif node.days_remaining <= 7 %}
+                                        <span class="badge critical">Критично</span>
+                                    {% elif node.days_remaining <= 30 %}
+                                        <span class="badge warning">Предупреждение</span>
+                                    {% else %}
+                                        <span class="badge ok">OK</span>
+                                    {% endif %}
+                                {% else %}
+                                    <span class="badge error">Ошибка данных</span>
                                 {% endif %}
                             {% elif node.check_status == 'never_checked' %}
                                 <span class="badge error">Не проверялся</span>
@@ -291,7 +334,7 @@
                         </td>
                         <td>
                             {% if node.checked_at %}
-                                <span class="timestamp">{{ node.checked_at.strftime('%Y-%m-%d %H:%M') }}</span>
+                                <span class="timestamp">{{ node.checked_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
                             {% else %}
                                 <span class="timestamp">Никогда</span>
                             {% endif %}
@@ -313,7 +356,7 @@
         </div>
         
         <footer>
-            ETN Certificate Monitor v1.0.0 | NSX-T Manager: {{ request.app.extra.get('nsx_url', 'N/A') if request.app.extra else 'N/A' }}
+            ETN Certificate Monitor v1.0.1-FIXED | NSX-T Manager: {{ request.app.extra.get('nsx_url', 'N/A') if request.app.extra else 'N/A' }}
         </footer>
     </div>
 </body>

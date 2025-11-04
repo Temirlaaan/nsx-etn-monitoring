@@ -1,4 +1,4 @@
-"""SSH certificate checker for ETN hosts."""
+"""SSH certificate checker for ETN hosts - ИСПРАВЛЕННАЯ ВЕРСИЯ."""
 import asyncio
 import asyncssh
 import logging
@@ -69,13 +69,50 @@ class CertificateChecker:
                 expiry_date = self._parse_cert_date(output)
                 
                 if expiry_date:
-                    days_remaining = (expiry_date - datetime.utcnow()).days
+                    now = datetime.utcnow()
+                    time_remaining = expiry_date - now
+                    
+                    # ✅ ИСПРАВЛЕНИЕ: Используем total_seconds() для точного расчета
+                    # Если осталось хотя бы 1 секунда - сертификат еще действителен
+                    total_seconds = time_remaining.total_seconds()
+                    
+                    # Для совместимости с БД сохраняем days_remaining как целое число
+                    # Округляем по математическим правилам
+                    days_remaining = int(time_remaining.days)
+                    
+                    # Если сертификат еще действителен (даже если меньше суток)
+                    # но days = 0, все равно оставляем 0 (но статус будет success)
+                    # В UI будем показывать "< 1 день" или точное время
+                    
                     result.update({
                         'status': 'success',
                         'cert_expiry_date': expiry_date,
-                        'days_remaining': days_remaining
+                        'days_remaining': days_remaining,
+                        'total_seconds': int(total_seconds)  # ✅ Добавили для точной проверки
                     })
-                    logger.info(f"Certificate on {host} expires in {days_remaining} days ({expiry_date.date()})")
+                    
+                    # Логирование с учетом часов
+                    if total_seconds > 0:
+                        hours_remaining = int(total_seconds // 3600)
+                        if days_remaining > 0:
+                            logger.info(
+                                f"Certificate on {host} expires in {days_remaining} days "
+                                f"({hours_remaining} hours) - {expiry_date}"
+                            )
+                        else:
+                            # Осталось меньше суток, но сертификат еще действителен
+                            logger.info(
+                                f"Certificate on {host} expires in {hours_remaining} hours "
+                                f"(less than 1 day) - {expiry_date}"
+                            )
+                    else:
+                        # Сертификат реально истек
+                        days_expired = abs(days_remaining)
+                        hours_expired = abs(int(total_seconds // 3600))
+                        logger.warning(
+                            f"Certificate on {host} EXPIRED {days_expired} days ago "
+                            f"({hours_expired} hours) - {expiry_date}"
+                        )
                 else:
                     result['error_message'] = f"Failed to parse date from: {output}"
                     result['status'] = 'error'
@@ -118,9 +155,17 @@ class CertificateChecker:
             else:
                 date_str = openssl_output.strip()
             
-            # Parse date: "Dec 31 23:59:59 2025 GMT"
-            # Format: %b %d %H:%M:%S %Y %Z
-            date_obj = datetime.strptime(date_str, '%b %d %H:%M:%S %Y %Z')
+            # ✅ ИСПРАВЛЕНИЕ: Используем более надежный парсинг
+            # Удаляем timezone name и парсим как UTC
+            if date_str.endswith(' GMT'):
+                date_str = date_str[:-4].strip()
+            
+            # Parse date: "Dec 31 23:59:59 2025"
+            # Format: %b %d %H:%M:%S %Y
+            date_obj = datetime.strptime(date_str, '%b %d %H:%M:%S %Y')
+            
+            # Явно указываем что это UTC (хотя datetime будет naive)
+            # В расчетах мы используем utcnow(), так что это корректно
             return date_obj
             
         except Exception as e:
@@ -157,7 +202,8 @@ class CertificateChecker:
                     'node_id': host_info['node_id'],
                     'host': host_info['host'],
                     'status': 'error',
-                    'error_message': f"Unhandled exception: {str(result)}"
+                    'error_message': f"Unhandled exception: {str(result)}",
+                    'days_remaining': -999  # ✅ Добавили для БД
                 })
             else:
                 processed_results.append(result)
