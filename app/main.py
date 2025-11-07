@@ -4,9 +4,10 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -190,9 +191,7 @@ async def logout(
 
 
 @app.get("/api/verify")
-async def verify_token(
-    current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
-):
+async def verify_token(current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None):
     """Проверка токена"""
     if not KEYCLOAK_ENABLED:
         return {
@@ -229,6 +228,25 @@ async def keycloak_callback(code: str = Query(...)):
 
 
 # ============ WEB UI ENDPOINTS ============
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Login page with Keycloak SSO button"""
+    if not KEYCLOAK_ENABLED:
+        # Если Keycloak отключен, редиректим сразу на главную
+        return RedirectResponse(url="/")
+    
+    html_path = Path(__file__).parent.parent / "templates" / "login.html"
+    if html_path.exists():
+        return FileResponse(html_path)
+    return HTMLResponse("<h1>Login page not found</h1>", status_code=404)
+
+
+@app.get("/callback", response_class=HTMLResponse)
+async def callback_page(request: Request):
+    """Callback page - redirects to login to handle the code exchange"""
+    return RedirectResponse(url="/login?" + str(request.query_params))
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
