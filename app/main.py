@@ -1,13 +1,16 @@
-"""FastAPI application for ETN certificate monitoring."""
+"""FastAPI application for ETN certificate monitoring with Keycloak auth."""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +22,15 @@ from app.schemas import (
     DashboardStatsSchema, CertificateCheckSchema
 )
 from app.scheduler import SchedulerService
+from app.keycloak_auth import (
+    get_current_active_user,
+    login_user,
+    refresh_token as refresh_keycloak_token,
+    logout_user,
+    KeycloakUser,
+    exchange_code_for_token,
+    KEYCLOAK_ENABLED
+)
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +43,26 @@ logger = logging.getLogger(__name__)
 scheduler_service: Optional[SchedulerService] = None
 
 
+# ============ PYDANTIC MODELS ============
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    refresh_token: Optional[str] = None
+    token_type: str
+    expires_in: Optional[int] = None
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+# ============ LIFESPAN MANAGER ============
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
@@ -38,6 +70,11 @@ async def lifespan(app: FastAPI):
     
     # Startup
     logger.info("Starting ETN Certificate Monitor...")
+    
+    if KEYCLOAK_ENABLED:
+        logger.info("🔐 Keycloak authentication ENABLED")
+    else:
+        logger.warning("⚠️ Keycloak authentication DISABLED - running in open mode")
     
     # Validate configuration
     try:
@@ -72,18 +109,133 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="ETN Certificate Monitor",
     description="Monitor Edge Transport Node SSL certificates from NSX-T Manager",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Setup templates
 templates = Jinja2Templates(directory="templates")
 
 
-# === Web UI Endpoints ===
+# ============ AUTHENTICATION ENDPOINTS ============
+
+@app.post("/api/login", response_model=Token)
+async def login(user_login: UserLogin):
+    """Вход в систему через Keycloak"""
+    if not KEYCLOAK_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Keycloak authentication is not enabled"
+        )
+    
+    try:
+        token_data = login_user(user_login.username, user_login.password)
+        return token_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during login"
+        )
+
+
+@app.post("/api/refresh", response_model=Token)
+async def refresh(refresh_request: RefreshTokenRequest):
+    """Обновление токена"""
+    if not KEYCLOAK_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Keycloak authentication is not enabled"
+        )
+    
+    try:
+        token_data = refresh_keycloak_token(refresh_request.refresh_token)
+        return token_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Token refresh error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error during token refresh"
+        )
+
+
+@app.post("/api/logout")
+async def logout(
+    refresh_request: RefreshTokenRequest,
+    current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
+):
+    """Выход из системы"""
+    if not KEYCLOAK_ENABLED:
+        return {"message": "Keycloak authentication is not enabled"}
+    
+    try:
+        logout_user(refresh_request.refresh_token)
+        return {"message": "Successfully logged out"}
+    except Exception as e:
+        logger.error(f"Logout error: {e}")
+        return {"message": "Logged out (with warnings)"}
+
+
+@app.get("/api/verify")
+async def verify_token(
+    current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
+):
+    """Проверка токена"""
+    if not KEYCLOAK_ENABLED:
+        return {
+            "valid": True,
+            "username": "anonymous",
+            "email": None,
+            "roles": [],
+            "auth_disabled": True
+        }
+    
+    return {
+        "valid": True,
+        "username": current_user.username,
+        "email": current_user.email,
+        "roles": current_user.roles
+    }
+
+
+@app.get("/api/callback", response_model=Token)
+async def keycloak_callback(code: str = Query(...)):
+    """Обмен code на token после редиректа от Keycloak"""
+    if not KEYCLOAK_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Keycloak authentication is not enabled"
+        )
+    
+    try:
+        token_data = exchange_code_for_token(code)
+        return token_data
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        raise HTTPException(status_code=401, detail="Authorization failed")
+
+
+# ============ WEB UI ENDPOINTS ============
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
+async def dashboard(
+    request: Request, 
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
+):
     """Main dashboard page."""
     
     # Get all active nodes
@@ -130,23 +282,39 @@ async def dashboard(request: Request, db: AsyncSession = Depends(get_db)):
         'certs_error': sum(1 for n in nodes_data if n['check_status'] not in ['success', 'never_checked'])
     }
     
+    # Pass user info to template
+    user_info = {
+        'username': current_user.username if current_user else 'anonymous',
+        'email': current_user.email if current_user else None
+    }
+    
     return templates.TemplateResponse(
         "index.html",
         {
             "request": request,
             "nodes": nodes_data,
             "stats": stats,
-            "now": datetime.utcnow()
+            "now": datetime.utcnow(),
+            "user": user_info,
+            "keycloak_enabled": KEYCLOAK_ENABLED
         }
     )
 
 
-# === API Endpoints ===
+# ============ API ENDPOINTS (Protected if Keycloak enabled) ============
+
+def optional_auth():
+    """Optional authentication dependency"""
+    if KEYCLOAK_ENABLED:
+        return Depends(get_current_active_user)
+    return None
+
 
 @app.get("/api/nodes", response_model=List[TransportNodeSchema])
 async def get_nodes(
     active_only: bool = True,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = optional_auth()
 ):
     """Get list of transport nodes."""
     query = select(TransportNode)
@@ -160,7 +328,11 @@ async def get_nodes(
 
 
 @app.get("/api/nodes/{node_id}", response_model=NodeDetailSchema)
-async def get_node_detail(node_id: str, db: AsyncSession = Depends(get_db)):
+async def get_node_detail(
+    node_id: str, 
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = optional_auth()
+):
     """Get detailed information about a specific node."""
     # Get node
     result = await db.execute(
@@ -190,7 +362,8 @@ async def get_node_detail(node_id: str, db: AsyncSession = Depends(get_db)):
 async def get_node_checks(
     node_id: str,
     limit: int = 50,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = optional_auth()
 ):
     """Get certificate check history for a node."""
     result = await db.execute(
@@ -204,7 +377,11 @@ async def get_node_checks(
 
 
 @app.get("/api/events", response_model=List[NodeEventSchema])
-async def get_events(limit: int = 100, db: AsyncSession = Depends(get_db)):
+async def get_events(
+    limit: int = 100, 
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = optional_auth()
+):
     """Get recent node events."""
     result = await db.execute(
         select(NodeEvent)
@@ -216,7 +393,10 @@ async def get_events(limit: int = 100, db: AsyncSession = Depends(get_db)):
 
 
 @app.get("/api/stats", response_model=DashboardStatsSchema)
-async def get_stats(db: AsyncSession = Depends(get_db)):
+async def get_stats(
+    db: AsyncSession = Depends(get_db),
+    current_user: KeycloakUser = optional_auth()
+):
     """Get dashboard statistics."""
     
     # Count nodes
@@ -287,11 +467,15 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow(),
-        "scheduler_running": scheduler_service is not None
+        "scheduler_running": scheduler_service is not None,
+        "keycloak_enabled": KEYCLOAK_ENABLED
     }
 
+
 @app.post("/api/trigger/cert-check")
-async def trigger_cert_check():
+async def trigger_cert_check(
+    current_user: KeycloakUser = optional_auth()
+):
     """Manually trigger certificate check."""
     if scheduler_service:
         logger.info("Manual certificate check triggered via API")
@@ -308,7 +492,9 @@ async def trigger_cert_check():
 
 
 @app.post("/api/trigger/nsx-sync")
-async def trigger_nsx_sync():
+async def trigger_nsx_sync(
+    current_user: KeycloakUser = optional_auth()
+):
     """Manually trigger NSX sync."""
     if scheduler_service:
         logger.info("Manual NSX sync triggered via API")
@@ -325,7 +511,9 @@ async def trigger_nsx_sync():
 
 
 @app.get("/api/scheduler/status")
-async def scheduler_status():
+async def scheduler_status(
+    current_user: KeycloakUser = optional_auth()
+):
     """Get scheduler status and next run times."""
     if not scheduler_service:
         return {"status": "error", "message": "Scheduler not running"}, 503
@@ -344,6 +532,7 @@ async def scheduler_status():
         "jobs": jobs_info,
         "timestamp": datetime.utcnow().isoformat()
     }
+
 
 if __name__ == "__main__":
     import uvicorn

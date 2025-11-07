@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  # FastAPI application
   etn-monitor:
     build: .
     container_name: etn-cert-monitor
-    # Убираем публичный порт 8000, будет доступен только через nginx
+    restart: unless-stopped
+    # ИЗМЕНЕНО: убраны публичные порты, теперь доступ только через nginx-proxy
     expose:
       - "8000"
     volumes:
@@ -13,41 +13,27 @@ services:
       - ./.env:/app/.env:ro
     environment:
       - DATABASE_URL=sqlite+aiosqlite:////data/etn_monitor.db
-    restart: unless-stopped
+      # Keycloak переменные передаются из .env файла
+      - KEYCLOAK_ENABLED=${KEYCLOAK_ENABLED:-false}
+      - KEYCLOAK_SERVER_URL=${KEYCLOAK_SERVER_URL}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID}
+      - KEYCLOAK_CLIENT_SECRET=${KEYCLOAK_CLIENT_SECRET}
+      - FRONTEND_CALLBACK_URL=${FRONTEND_CALLBACK_URL}
+    networks:
+      - etn-network
+      - proxy-network  # ← ДОБАВЛЕНО: подключение к общему Nginx
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-    networks:
-      - etn-network
-
-  # Nginx reverse proxy
-  nginx:
-    image: nginx:1.25-alpine
-    container_name: etn-nginx
-    ports:
-      - "80:80"      # HTTP (redirect to HTTPS)
-      - "443:443"    # HTTPS
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./nginx/ssl:/etc/nginx/ssl:ro
-      - nginx-logs:/var/log/nginx
-    depends_on:
-      - etn-monitor
-    restart: unless-stopped
-    networks:
-      - etn-network
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
 networks:
   etn-network:
     driver: bridge
-
-volumes:
-  nginx-logs:
+  # ДОБАВЛЕНО: подключение к внешней сети для nginx-proxy
+  proxy-network:
+    external: true
+    name: proxy-network

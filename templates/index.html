@@ -13,6 +13,8 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
             background: #f5f5f5;
             padding: 20px;
             color: #333;
@@ -31,6 +33,9 @@
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
             padding: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         
         header h1 {
@@ -41,6 +46,21 @@
         header p {
             opacity: 0.9;
             font-size: 14px;
+        }
+        
+        .user-info {
+            text-align: right;
+        }
+        
+        .user-info .username {
+            font-size: 16px;
+            font-weight: 500;
+            margin-bottom: 5px;
+        }
+        
+        .user-info .email {
+            font-size: 12px;
+            opacity: 0.8;
         }
         
         .stats {
@@ -81,10 +101,95 @@
             padding: 20px;
         }
         
+        /* Информационный блок */
+        .info-banner {
+            background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+            border: 2px solid #3b82f6;
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .info-banner-icon {
+            font-size: 24px;
+            color: #1e40af;
+        }
+        
+        .info-banner-text {
+            flex: 1;
+            font-size: 14px;
+            line-height: 1.5;
+            color: #1e40af;
+        }
+        
+        .info-banner-text strong {
+            font-weight: 600;
+        }
+        
+        .info-banner-link {
+            background: #3b82f6;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        
+        .info-banner-link:hover {
+            background: #2563eb;
+        }
+        
+        /* Фильтры */
+        .filters {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-group {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .filter-label {
+            font-size: 12px;
+            color: #6b7280;
+            font-weight: 500;
+        }
+        
+        .filter-select {
+            padding: 8px 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+            cursor: pointer;
+            min-width: 180px;
+        }
+        
+        .filter-select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        .filter-count {
+            font-size: 13px;
+            color: #6b7280;
+            padding: 8px 0;
+        }
+        
         table {
             width: 100%;
             border-collapse: collapse;
-            margin-top: 20px;
+            margin-top: 10px;
         }
         
         th {
@@ -197,13 +302,28 @@
             color: #9ca3af;
             font-style: italic;
         }
+        
+        /* Скрытие строк через фильтр */
+        tr.filtered-out {
+            display: none;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>🔒 ETN Certificate Monitor</h1>
-            <p>Мониторинг SSL сертификатов Edge Transport Nodes из NSX-T Manager</p>
+            <div>
+                <h1>🔒 ETN Certificate Monitor</h1>
+                <p>Мониторинг SSL сертификатов Edge Transport Nodes из NSX-T Manager</p>
+            </div>
+            {% if user and user.username != 'anonymous' %}
+            <div class="user-info">
+                <div class="username">👤 {{ user.username }}</div>
+                {% if user.email %}
+                <div class="email">{{ user.email }}</div>
+                {% endif %}
+            </div>
+            {% endif %}
         </header>
         
         <div class="stats">
@@ -234,8 +354,51 @@
         </div>
         
         <div class="content">
+            <!-- Информационный баннер -->
+            <div class="info-banner">
+                <div class="info-banner-icon">ℹ️</div>
+                <div class="info-banner-text">
+                    <strong>Важно!</strong> В случае истечения или приближения срока истечения сертификата, просим следовать инструкциям по обновлению.
+                </div>
+                <a href="https://wiki.t-cloud.kz/pages/viewpage.action?pageId=40468489" 
+                   target="_blank" 
+                   class="info-banner-link">
+                    Инструкция →
+                </a>
+            </div>
+            
+            <!-- Фильтры -->
             {% if nodes %}
-            <table>
+            <div class="filters">
+                <div class="filter-group">
+                    <label class="filter-label">Фильтр по статусу:</label>
+                    <select id="statusFilter" class="filter-select">
+                        <option value="all">Все статусы</option>
+                        <option value="ok">OK (> 30 дней)</option>
+                        <option value="warning">Предупреждение (7-30 дней)</option>
+                        <option value="critical">Критично (0-7 дней)</option>
+                        <option value="expired">Истекшие (< 0 дней)</option>
+                        <option value="error">Ошибки проверки</option>
+                    </select>
+                </div>
+                
+                <div class="filter-group">
+                    <label class="filter-label">Режим обслуживания:</label>
+                    <select id="maintenanceFilter" class="filter-select">
+                        <option value="all">Все</option>
+                        <option value="DISABLED">Отключен</option>
+                        <option value="ENABLED">Включен</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="filter-count">
+                Показано: <span id="visibleCount">{{ nodes|length }}</span> из {{ nodes|length }} нод
+            </div>
+            {% endif %}
+            
+            {% if nodes %}
+            <table id="nodesTable">
                 <thead>
                     <tr>
                         <th>Имя ETN</th>
@@ -249,7 +412,13 @@
                 </thead>
                 <tbody>
                     {% for node in nodes %}
-                    <tr>
+                    <tr data-status="{{ 
+                        'expired' if node.cert_expiry_date and (node.cert_expiry_date - now).total_seconds() <= 0
+                        else 'critical' if node.days_remaining is not none and 0 < node.days_remaining <= 7
+                        else 'warning' if node.days_remaining is not none and node.days_remaining <= 30
+                        else 'ok' if node.check_status == 'success'
+                        else 'error'
+                    }}" data-maintenance="{{ node.maintenance_mode }}">
                         <td><strong>{{ node.display_name }}</strong></td>
                         <td><span class="ip">{{ node.ip_address }}</span></td>
                         <td>
@@ -271,12 +440,10 @@
                         <td>
                             {% if node.check_status == 'success' %}
                                 {% set days = node.days_remaining %}
-                                {% set now = now %}
                                 {% if node.cert_expiry_date %}
                                     {% set time_diff = node.cert_expiry_date - now %}
                                     {% set total_seconds = time_diff.total_seconds() %}
                                     
-                                    {# ✅ ИСПРАВЛЕННАЯ ЛОГИКА: Проверяем реальное время, а не только дни #}
                                     {% if total_seconds > 0 %}
                                         {# Сертификат еще действителен #}
                                         {% if days > 0 %}
@@ -310,7 +477,6 @@
                                     {% set time_diff = node.cert_expiry_date - now %}
                                     {% set total_seconds = time_diff.total_seconds() %}
                                     
-                                    {# ✅ ИСПРАВЛЕННАЯ ЛОГИКА: Используем total_seconds #}
                                     {% if total_seconds <= 0 %}
                                         <span class="badge expired">Истёк</span>
                                     {% elif node.days_remaining <= 7 %}
@@ -356,8 +522,57 @@
         </div>
         
         <footer>
-            ETN Certificate Monitor v1.0.1-FIXED | NSX-T Manager: {{ request.app.extra.get('nsx_url', 'N/A') if request.app.extra else 'N/A' }}
+            ETN Certificate Monitor v2.0.0 | 
+            {% if keycloak_enabled %}
+            🔐 Keycloak Auth Enabled
+            {% else %}
+            ⚠️ Open Access Mode
+            {% endif %}
         </footer>
     </div>
+    
+    <script>
+        // Фильтрация таблицы
+        const statusFilter = document.getElementById('statusFilter');
+        const maintenanceFilter = document.getElementById('maintenanceFilter');
+        const table = document.getElementById('nodesTable');
+        const visibleCount = document.getElementById('visibleCount');
+        
+        function applyFilters() {
+            if (!table) return;
+            
+            const statusValue = statusFilter.value;
+            const maintenanceValue = maintenanceFilter.value;
+            const rows = table.querySelectorAll('tbody tr');
+            let visible = 0;
+            
+            rows.forEach(row => {
+                const rowStatus = row.getAttribute('data-status');
+                const rowMaintenance = row.getAttribute('data-maintenance');
+                
+                let showStatus = statusValue === 'all' || rowStatus === statusValue;
+                let showMaintenance = maintenanceValue === 'all' || rowMaintenance === maintenanceValue;
+                
+                if (showStatus && showMaintenance) {
+                    row.classList.remove('filtered-out');
+                    visible++;
+                } else {
+                    row.classList.add('filtered-out');
+                }
+            });
+            
+            if (visibleCount) {
+                visibleCount.textContent = visible;
+            }
+        }
+        
+        if (statusFilter) {
+            statusFilter.addEventListener('change', applyFilters);
+        }
+        
+        if (maintenanceFilter) {
+            maintenanceFilter.addEventListener('change', applyFilters);
+        }
+    </script>
 </body>
 </html>
