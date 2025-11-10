@@ -218,11 +218,11 @@ async def verify_token(current_user: KeycloakUser = Depends(get_current_user_fro
     }
 
 
-@app.get("/api/callback")
-async def keycloak_callback(code: str = Query(...), response: Response):
+@app.get("/callback")  # ← УБРАЛИ /api/
+async def keycloak_callback(code: str = Query(...)):
     """
     Обмен code на token после редиректа от Keycloak.
-    Устанавливает токен в HTTP-only cookie и редиректит на главную страницу.
+    Устанавливает токен в HTTP-only cookie и редиректит на главную.
     """
     if not KEYCLOAK_ENABLED:
         raise HTTPException(
@@ -233,16 +233,19 @@ async def keycloak_callback(code: str = Query(...), response: Response):
     try:
         token_data = exchange_code_for_token(code)
         
-        # ✅ Устанавливаем токен в HTTP-only cookie
+        response = RedirectResponse(url="/")
+        
+        # Устанавливаем access token
         response.set_cookie(
             key="access_token",
             value=token_data["access_token"],
             httponly=True,
-            secure=True,  # Только для HTTPS
+            secure=True,
             samesite="lax",
             max_age=token_data.get("expires_in", 3600)
         )
         
+        # Устанавливаем refresh token (если есть)
         if token_data.get("refresh_token"):
             response.set_cookie(
                 key="refresh_token",
@@ -250,23 +253,16 @@ async def keycloak_callback(code: str = Query(...), response: Response):
                 httponly=True,
                 secure=True,
                 samesite="lax",
-                max_age=86400  # 24 hours
+                max_age=86400
             )
         
-        logger.info("Token set in cookie, redirecting to dashboard")
-        
-        # ✅ Редиректим на главную страницу
-        return RedirectResponse(url="/", status_code=302)
+        logger.info("Keycloak callback: tokens set in cookies, redirecting to /")
+        return response
         
     except Exception as e:
-        logger.error(f"Callback error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_302_FOUND,
-            detail="Authorization failed",
-            headers={"Location": "/login?error=auth_failed"}
-        )
-
-
+        logger.error(f"Keycloak callback error: {e}")
+        return RedirectResponse(url="/login?error=auth_failed", status_code=302)
+    
 # ============ WEB UI ENDPOINTS ============
 
 @app.get("/login", response_class=HTMLResponse)
