@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, Request, HTTPException, status, Query
+from fastapi import FastAPI, Depends, Request, HTTPException, status, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -25,6 +25,7 @@ from app.schemas import (
 from app.scheduler import SchedulerService
 from app.keycloak_auth import (
     get_current_active_user,
+    get_current_user_from_cookie,
     login_user,
     refresh_token as refresh_keycloak_token,
     logout_user,
@@ -175,7 +176,8 @@ async def refresh(refresh_request: RefreshTokenRequest):
 
 @app.post("/api/logout")
 async def logout(
-    refresh_request: RefreshTokenRequest,
+    response: Response,
+    refresh_request: RefreshTokenRequest = None,
     current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
 ):
     """Выход из системы"""
@@ -183,7 +185,13 @@ async def logout(
         return {"message": "Keycloak authentication is not enabled"}
     
     try:
-        logout_user(refresh_request.refresh_token)
+        if refresh_request:
+            logout_user(refresh_request.refresh_token)
+        
+        # Удаляем cookies
+        response.delete_cookie(key="access_token")
+        response.delete_cookie(key="refresh_token")
+        
         return {"message": "Successfully logged out"}
     except Exception as e:
         logger.error(f"Logout error: {e}")
@@ -191,8 +199,8 @@ async def logout(
 
 
 @app.get("/api/verify")
-async def verify_token(current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None):
-    """Проверка токена"""
+async def verify_token(current_user: KeycloakUser = Depends(get_current_user_from_cookie) if KEYCLOAK_ENABLED else None):
+    """Проверка токена из cookie"""
     if not KEYCLOAK_ENABLED:
         return {
             "valid": True,
@@ -210,9 +218,12 @@ async def verify_token(current_user: KeycloakUser = Depends(get_current_active_u
     }
 
 
-@app.get("/api/callback", response_model=Token)
-async def keycloak_callback(code: str = Query(...)):
-    """Обмен code на token после редиректа от Keycloak"""
+@app.get("/api/callback")
+async def keycloak_callback(code: str = Query(...), response: Response):
+    """
+    Обмен code на token после редиректа от Keycloak.
+    Устанавливает токен в HTTP-only cookie и редиректит на главную страницу.
+    """
     if not KEYCLOAK_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -221,10 +232,39 @@ async def keycloak_callback(code: str = Query(...)):
     
     try:
         token_data = exchange_code_for_token(code)
-        return token_data
+        
+        # ✅ Устанавливаем токен в HTTP-only cookie
+        response.set_cookie(
+            key="access_token",
+            value=token_data["access_token"],
+            httponly=True,
+            secure=True,  # Только для HTTPS
+            samesite="lax",
+            max_age=token_data.get("expires_in", 3600)
+        )
+        
+        if token_data.get("refresh_token"):
+            response.set_cookie(
+                key="refresh_token",
+                value=token_data["refresh_token"],
+                httponly=True,
+                secure=True,
+                samesite="lax",
+                max_age=86400  # 24 hours
+            )
+        
+        logger.info("Token set in cookie, redirecting to dashboard")
+        
+        # ✅ Редиректим на главную страницу
+        return RedirectResponse(url="/", status_code=302)
+        
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        raise HTTPException(status_code=401, detail="Authorization failed")
+        raise HTTPException(
+            status_code=status.HTTP_302_FOUND,
+            detail="Authorization failed",
+            headers={"Location": "/login?error=auth_failed"}
+        )
 
 
 # ============ WEB UI ENDPOINTS ============
@@ -242,19 +282,13 @@ async def login_page(request: Request):
     return HTMLResponse("<h1>Login page not found</h1>", status_code=404)
 
 
-@app.get("/callback", response_class=HTMLResponse)
-async def callback_page(request: Request):
-    """Callback page - redirects to login to handle the code exchange"""
-    return RedirectResponse(url="/login?" + str(request.query_params))
-
-
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(
     request: Request, 
     db: AsyncSession = Depends(get_db),
-    current_user: KeycloakUser = Depends(get_current_active_user) if KEYCLOAK_ENABLED else None
+    current_user: KeycloakUser = Depends(get_current_user_from_cookie) if KEYCLOAK_ENABLED else None
 ):
-    """Main dashboard page."""
+    """Main dashboard page with cookie-based authentication."""
     
     # Get all active nodes
     result = await db.execute(
@@ -322,7 +356,7 @@ async def dashboard(
 # ============ API ENDPOINTS (Protected if Keycloak enabled) ============
 
 def optional_auth():
-    """Optional authentication dependency"""
+    """Optional authentication dependency for API"""
     if KEYCLOAK_ENABLED:
         return Depends(get_current_active_user)
     return None

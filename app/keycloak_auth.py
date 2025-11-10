@@ -1,7 +1,7 @@
 # app/keycloak_auth.py
 import os
 from typing import Optional
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from keycloak import KeycloakOpenID
 from jose import JWTError, jwt
@@ -112,10 +112,77 @@ def verify_token(token: str) -> dict:
         )
 
 
+# ============ COOKIE-BASED AUTHENTICATION (для веб-интерфейса) ============
+
+async def get_current_user_from_cookie(
+    access_token: Optional[str] = Cookie(None)
+) -> KeycloakUser:
+    """
+    Получение текущего пользователя из HTTP-only cookie.
+    Используется для защиты веб-страниц.
+    """
+    if not access_token:
+        logger.warning("No access_token cookie found, redirecting to login")
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            detail="Not authenticated",
+            headers={"Location": "/login"}
+        )
+    
+    try:
+        # Верифицируем токен
+        token_info = verify_token(access_token)
+        
+        # Извлекаем данные пользователя
+        username = token_info.get("preferred_username", "unknown")
+        email = token_info.get("email", "")
+        user_id = token_info.get("sub", "")
+        
+        # Извлекаем роли из токена
+        roles = []
+        if "realm_access" in token_info:
+            roles = token_info["realm_access"].get("roles", [])
+        
+        # Создаем объект пользователя
+        user = KeycloakUser(
+            username=username,
+            email=email,
+            roles=roles,
+            user_id=user_id
+        )
+        
+        logger.debug(f"User authenticated from cookie: {username}")
+        return user
+        
+    except HTTPException as e:
+        # Если это уже редирект, пробросим его
+        if e.status_code == status.HTTP_307_TEMPORARY_REDIRECT:
+            raise
+        # Иначе токен невалиден - редиректим на логин
+        logger.warning(f"Invalid token in cookie, redirecting to login: {e.detail}")
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            detail="Invalid token",
+            headers={"Location": "/login"}
+        )
+    except Exception as e:
+        logger.error(f"Error getting current user from cookie: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+            detail="Authentication error",
+            headers={"Location": "/login"}
+        )
+
+
+# ============ BEARER TOKEN AUTHENTICATION (для API) ============
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security)
 ) -> KeycloakUser:
-    """Получение текущего пользователя из токена"""
+    """
+    Получение текущего пользователя из Bearer токена.
+    Используется для защиты API endpoints.
+    """
     token = credentials.credentials
     
     try:
@@ -157,11 +224,13 @@ async def get_current_user(
 async def get_current_active_user(
     current_user: KeycloakUser = Depends(get_current_user)
 ) -> KeycloakUser:
-    """Проверка активности пользователя"""
+    """Проверка активности пользователя (для Bearer token API)"""
     if not current_user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
+
+# ============ AUTHENTICATION FUNCTIONS ============
 
 def login_user(username: str, password: str) -> dict:
     """Логин пользователя через Keycloak"""
